@@ -64,6 +64,10 @@ def retrieve_precipitation_data(province_gdf, start_date: str, end_date: str):
             for batch_idx, (batch_start, batch_end) in enumerate(date_batches, 1):
                 print(f"[INFO] Processing batch {batch_idx}/{len(date_batches)}: {batch_start} to {batch_end}")
 
+                # GEE filterDate uses exclusive end; add one day so the batch end date is included
+                batch_end_dt = datetime.strptime(batch_end, "%Y-%m-%d")
+                batch_end_gee = (batch_end_dt + timedelta(days=1)).strftime("%Y-%m-%d")
+
                 # Define the geometry
                 if commune["geometry"].geom_type == "MultiPolygon":
                     polygons = [
@@ -79,7 +83,7 @@ def retrieve_precipitation_data(province_gdf, start_date: str, end_date: str):
                 # Fetch CHIRPS precipitation data for the commune's polygon over the specified time period
                 chirps = (
                     ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY")
-                    .filterDate(batch_start, batch_end)
+                    .filterDate(batch_start, batch_end_gee)
                     .select("precipitation")
                 )
 

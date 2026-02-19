@@ -43,6 +43,14 @@ const formSchema = z.object({
 
 const dataTypes = ["Temperature", "Precipitation"];
 
+/** Format a Date as YYYY-MM-DD using the user's local calendar date (avoids timezone shift from toISOString). */
+function formatDateLocal(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
 interface LocationData {
     [province: string]: {
         [district: string]: string[];
@@ -147,8 +155,8 @@ export default function WeatherDataForm() {
         const requestData: any = {
             dataset: values.dataType.toLowerCase(),
             provinces: [values.state],
-            date_start: values.startDate.toISOString().split('T')[0],
-            date_end: values.endDate.toISOString().split('T')[0]
+            date_start: formatDateLocal(values.startDate),
+            date_end: formatDateLocal(values.endDate)
         };
 
         // Add districts if a specific district is selected (not "All Districts")

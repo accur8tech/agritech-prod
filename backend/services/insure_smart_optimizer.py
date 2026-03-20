@@ -596,7 +596,7 @@ def generate_trial_configuration(
                 continue
             elif peril_type == "ERI":
                 trigger = trial.suggest_int(f"eri_trigger_{period_idx}_{peril_idx}", 40, 200)
-                dur_min, dur_max = get_constrained_duration_range(1, 5, period_length)
+                dur_min, dur_max = get_constrained_duration_range(3, 5, period_length)
                 duration = trial.suggest_int(f"eri_duration_{period_idx}_{peril_idx}", dur_min, dur_max)
                 # Use discrete values for unit_payout to ensure 2 decimal places
                 unit_payout_options = [round(x * 0.05, 2) for x in range(10, 61)]  # 0.50 to 3.00 in 0.05 steps

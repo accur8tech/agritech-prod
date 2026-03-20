@@ -2,10 +2,11 @@ import optuna
 import numpy as np
 from typing import List, Dict, Any, Tuple
 from services.insure_smart_premium_calc import (
-    calculate_insure_smart_premium, 
+    calculate_insure_smart_premium,
     clear_weather_data_cache,
     DEFAULT_ADMIN_LOADING,
-    DEFAULT_PROFIT_LOADING
+    DEFAULT_PROFIT_LOADING,
+    get_historical_period_aggregates,
 )
 import concurrent.futures
 import threading
@@ -143,11 +144,58 @@ def optimize_insure_smart(request_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     
     return results
 
-def run_optimization(option_type: str, commune: str, province: str, district: str, periods: List[Dict], 
+def _compute_lri_trigger_bounds(
+    commune: str,
+    province: str,
+    district: str,
+    base_periods: List[Dict],
+    data_type: str,
+) -> Dict[Tuple[int, int], Dict[str, int]]:
+    """
+    Precompute LRI trigger search bounds from historical aggregate rainfall.
+    Center = mean - 1*std; range = (mean - 1.5*std, mean - 0.5*std).
+    Returns dict keyed by (period_idx, peril_idx) with "trigger_low" and "trigger_high".
+    """
+    LRI_FALLBACK_LOW, LRI_FALLBACK_HIGH = 20, 150
+    bounds = {}
+    for period_idx, base_period in enumerate(base_periods):
+        start_day = base_period.get("start_day", 0)
+        end_day = base_period.get("end_day", 364)
+        for peril_idx, peril in enumerate(base_period.get("perils", [])):
+            if peril["type"] != "LRI":
+                continue
+            aggregates = get_historical_period_aggregates(
+                province=province,
+                district=district,
+                commune=commune,
+                start_day=start_day,
+                end_day=end_day,
+                data_type=data_type,
+            )
+            if len(aggregates) < 2:
+                bounds[(period_idx, peril_idx)] = {"trigger_low": LRI_FALLBACK_LOW, "trigger_high": LRI_FALLBACK_HIGH}
+                continue
+            mean_ag = float(np.mean(aggregates))
+            std_ag = float(np.std(aggregates))
+            if std_ag <= 0:
+                bounds[(period_idx, peril_idx)] = {"trigger_low": LRI_FALLBACK_LOW, "trigger_high": LRI_FALLBACK_HIGH}
+                continue
+            trigger_center = mean_ag - 1.0 * std_ag
+            trigger_low = int(round(mean_ag - 1.5 * std_ag))
+            trigger_high = int(round(mean_ag - 0.5 * std_ag))
+            trigger_low = max(1, trigger_low)
+            trigger_high = max(trigger_low + 1, trigger_high)
+            bounds[(period_idx, peril_idx)] = {"trigger_low": trigger_low, "trigger_high": trigger_high}
+    return bounds
+
+
+def run_optimization(option_type: str, commune: str, province: str, district: str, periods: List[Dict],
                     sum_insured: float, min_premium_cap: float, max_premium_cap: float, user_premium_cap: float = None, data_type: str = "precipitation") -> Dict[str, Any]:
     """
     Run a single optimization with specified premium cap range.
     """
+    lri_trigger_bounds = _compute_lri_trigger_bounds(commune, province, district, periods, data_type)
+
     # Create optimization study
     study = optuna.create_study(
         direction="maximize",
@@ -173,7 +221,7 @@ def run_optimization(option_type: str, commune: str, province: str, district: st
                 premium_cap = min_premium_cap
             
             # Generate trial configuration
-            trial_periods = generate_trial_configuration(trial, periods, sum_insured, data_type)
+            trial_periods = generate_trial_configuration(trial, periods, sum_insured, data_type, lri_trigger_bounds)
             
             # Validate that all durations are within period lengths
             for tp in trial_periods:
@@ -182,19 +230,16 @@ def run_optimization(option_type: str, commune: str, province: str, district: st
                     # This should not happen with the fix, but log if it does
                     print(f"WARNING: Duration {tp.get('duration')} exceeds period length {period_length} for {tp.get('peril_type')}")
             
-            # Check if max_payout is achievable for LRI (safety check)
-            # This validates that trigger * unit_payout >= max_payout (allocated_si)
+            # Check if max_payout is achievable (safety check). LRI uses derived unit_payout so this is satisfied; keep for ERI/LTI/HTI.
             impracticality_penalty = 0.0
             for tp in trial_periods:
                 if tp["peril_type"] == "LRI":
-                    max_achievable = tp["trigger"] * tp["unit_payout"]
-                    if max_achievable < tp["max_payout"]:
-                        # Calculate how far off we are (as a ratio)
-                        shortfall_ratio = (tp["max_payout"] - max_achievable) / tp["max_payout"]
-                        # Very heavy penalty - makes impractical configurations strongly discouraged
-                        # Using 20.0 multiplier to ensure invalid combinations score very poorly
-                        impracticality_penalty = 20.0 * shortfall_ratio
-                        break  # Only need to check once, penalty applies to whole config
+                    continue  # LRI unit_payout is derived so max is achievable
+                max_achievable = tp["trigger"] * tp["unit_payout"]
+                if max_achievable < tp["max_payout"]:
+                    shortfall_ratio = (tp["max_payout"] - max_achievable) / tp["max_payout"]
+                    impracticality_penalty = 20.0 * shortfall_ratio
+                    break
             
             # Calculate premium and metrics
             result = calculate_insure_smart_premium(
@@ -431,11 +476,19 @@ def convert_periods_format(periods_data: List[Dict]) -> List[Dict]:
     
     return converted_periods
 
-def generate_trial_configuration(trial: optuna.Trial, base_periods: List[Dict], sum_insured: float, data_type: str = "precipitation") -> List[Dict]:
+def generate_trial_configuration(
+    trial: optuna.Trial,
+    base_periods: List[Dict],
+    sum_insured: float,
+    data_type: str = "precipitation",
+    lri_trigger_bounds: Dict[Tuple[int, int], Dict[str, int]] = None,
+) -> List[Dict]:
     """
     Generate a trial configuration by sampling parameters for each period and peril.
     SI is split between indexes (LRI, ERI) using a discrete set (40/60, 50/50, 60/40) for two indexes. If an index has multiple periods, split its SI allocation equally among its periods.
-    max_payout for each period/peril is set to its SI allocation. Only trigger, duration, and unit_payout are optimized.
+    max_payout for each period/peril is set to its SI allocation.
+    LRI: aggregate rainfall method; only trigger and exit_trigger are optimized; duration=period_length, unit_payout=allocated_si/(trigger-exit_trigger).
+    ERI/LTI/HTI: trigger, duration, and unit_payout are optimized.
     """
     def get_constrained_duration_range(original_min: int, original_max: int, period_length: int) -> tuple[int, int]:
         """Constrain duration range to not exceed period length."""
@@ -516,17 +569,31 @@ def generate_trial_configuration(trial: optuna.Trial, base_periods: List[Dict], 
             # SI allocation for this period/peril
             allocated_si = index_period_si[peril_type]
             
-            # Optimize trigger, duration, unit_payout
+            # Optimize trigger, duration, unit_payout (LRI uses aggregate rainfall; only trigger and exit_trigger)
             if peril_type == "LRI":
-                # Sample trigger first (reverse sampling approach)
-                trigger = trial.suggest_int(f"lri_trigger_{period_idx}_{peril_idx}", 20, 150)
-                dur_min, dur_max = get_constrained_duration_range(5, 30, period_length)
-                duration = trial.suggest_int(f"lri_duration_{period_idx}_{peril_idx}", dur_min, dur_max)
-                # Use discrete values for unit_payout to ensure 2 decimal places
-                # Note: Must use fixed list for Optuna categorical distribution
-                # Validation of trigger * unit_payout >= allocated_si is done in objective function
-                unit_payout_options = [round(x * 0.05, 2) for x in range(10, 61)]  # 0.50 to 3.00 in 0.05 steps
-                unit_payout = trial.suggest_categorical(f"lri_unit_payout_{period_idx}_{peril_idx}", unit_payout_options)
+                bounds = (lri_trigger_bounds or {}).get((period_idx, peril_idx), {"trigger_low": 20, "trigger_high": 150})
+                trigger_low = bounds["trigger_low"]
+                trigger_high = bounds["trigger_high"]
+                trigger = trial.suggest_int(f"lri_trigger_{period_idx}_{peril_idx}", trigger_low, trigger_high)
+                exit_trigger_high = max(0, trigger - 1)
+                exit_trigger = trial.suggest_int(f"lri_exit_trigger_{period_idx}_{peril_idx}", 0, exit_trigger_high)
+                gap = trigger - exit_trigger
+                if gap <= 0:
+                    gap = 1
+                unit_payout = round(allocated_si / gap, 2)
+                duration = period_length  # Aggregate over full period
+                trial_periods.append({
+                    "peril_type": peril_type,
+                    "trigger": trigger,
+                    "duration": duration,
+                    "unit_payout": unit_payout,
+                    "max_payout": round(allocated_si, 2),
+                    "allocated_si": allocated_si,
+                    "start_day": base_period.get("start_day", 0),
+                    "end_day": base_period.get("end_day", 364),
+                    "exit_trigger": exit_trigger,
+                })
+                continue
             elif peril_type == "ERI":
                 trigger = trial.suggest_int(f"eri_trigger_{period_idx}_{peril_idx}", 40, 200)
                 dur_min, dur_max = get_constrained_duration_range(1, 5, period_length)
@@ -663,10 +730,12 @@ def reconstruct_configuration(trial: optuna.Trial, base_periods: List[Dict], sum
             allocated_si = index_period_si[peril_type]
             if peril_type == "LRI":
                 trigger = int(trial.params[f"lri_trigger_{period_idx}_{peril_idx}"])
-                duration = int(trial.params[f"lri_duration_{period_idx}_{peril_idx}"])
-                # Safety clamp: ensure duration doesn't exceed period length
-                duration = min(duration, period_length)
-                unit_payout = float(trial.params[f"lri_unit_payout_{period_idx}_{peril_idx}"])  # Already rounded from categorical
+                exit_trigger = int(trial.params[f"lri_exit_trigger_{period_idx}_{peril_idx}"])
+                duration = period_length
+                gap = trigger - exit_trigger
+                if gap <= 0:
+                    gap = 1
+                unit_payout = round(allocated_si / gap, 2)
             elif peril_type == "ERI":
                 trigger = int(trial.params[f"eri_trigger_{period_idx}_{peril_idx}"])
                 duration = int(trial.params[f"eri_duration_{period_idx}_{peril_idx}"])
@@ -686,7 +755,7 @@ def reconstruct_configuration(trial: optuna.Trial, base_periods: List[Dict], sum
                 duration = min(duration, period_length)
                 unit_payout = float(trial.params[f"hti_unit_payout_{period_idx}_{peril_idx}"])  # Already rounded from categorical
             max_payout = round(allocated_si, 2)
-            trial_periods.append({
+            period_dict = {
                 "peril_type": peril_type,
                 "trigger": trigger,
                 "duration": duration,
@@ -694,8 +763,11 @@ def reconstruct_configuration(trial: optuna.Trial, base_periods: List[Dict], sum
                 "max_payout": max_payout,
                 "allocated_si": allocated_si,
                 "start_day": base_period.get("start_day", 0),
-                "end_day": base_period.get("end_day", 364)
-            })
+                "end_day": base_period.get("end_day", 364),
+            }
+            if peril_type == "LRI":
+                period_dict["exit_trigger"] = exit_trigger
+            trial_periods.append(period_dict)
     return trial_periods
 
 def format_periods_for_output(trial_periods: List[Dict], base_periods: List[Dict]) -> List[Dict]:
@@ -716,14 +788,17 @@ def format_periods_for_output(trial_periods: List[Dict], base_periods: List[Dict
                     trial_peril.get("start_day", 0) == base_period.get("start_day", 0) and
                     trial_peril.get("end_day", 364) == base_period.get("end_day", 364)):
                     
-                    period_perils.append({
+                    peril_out = {
                         "peril_type": trial_peril["peril_type"],
                         "trigger": int(trial_peril["trigger"]),
                         "duration": int(trial_peril["duration"]),
                         "unit_payout": round(trial_peril["unit_payout"], 2),
                         "max_payout": round(trial_peril["max_payout"], 2),
-                        "allocated_si": round(trial_peril["allocated_si"], 2)
-                    })
+                        "allocated_si": round(trial_peril["allocated_si"], 2),
+                    }
+                    if "exit_trigger" in trial_peril:
+                        peril_out["exit_trigger"] = int(trial_peril["exit_trigger"])
+                    period_perils.append(peril_out)
                     break
         
         if period_perils:

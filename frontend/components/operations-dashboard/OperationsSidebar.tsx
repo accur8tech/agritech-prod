@@ -124,7 +124,7 @@ export function OperationsSidebar({ user }: OperationsSidebarProps) {
       {/* Footer */}
       <div className="p-4 border-t border-gray-200">
         <div className="text-xs text-gray-500 text-center">
-          AccuRate v1.0
+          AccuRate v3.2
         </div>
       </div>
     </div>

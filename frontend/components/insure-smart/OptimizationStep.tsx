@@ -94,6 +94,10 @@ export default function OptimizationStep({
                 const exceedsPremiumCap = !hasError && optimizationResults.some(
                   (result) => result.premiumCost && result.premiumCost > premiumCap
                 );
+
+                // Note from backend (e.g., adjusted sum insured to fit cap)
+                const notedResult = !hasError ? optimizationResults.find((result) => (result as any).note) : undefined;
+                const noteText: string | undefined = notedResult ? (notedResult as any).note : undefined;
                 
                 if (hasError) {
                   // Error state (Red)
@@ -108,7 +112,7 @@ export default function OptimizationStep({
                       </p>
                     </div>
                   );
-                } else if (exceedsPremiumCap) {
+                } else if (exceedsPremiumCap || noteText) {
                   // Warning state (Yellow)
                   return (
                     <div className="bg-yellow-50 border border-yellow-200 p-4 rounded-lg">
@@ -117,7 +121,7 @@ export default function OptimizationStep({
                         <span className="font-semibold">Product Design Complete</span>
                       </div>
                       <p className="text-yellow-700 text-sm mt-1">
-                        Configuration slightly exceeds premium cap (within acceptable tolerance)
+                        {noteText ? noteText : 'Configuration slightly exceeds premium cap (within acceptable tolerance)'}
                       </p>
                     </div>
                   );

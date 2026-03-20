@@ -66,6 +66,63 @@ def _get_weather_data(province, data_type):
     
     raise FileNotFoundError(f"No weather data file found for {province} (normalized: {normalized_province}). Tried: {parquet_path} and {excel_path}")
 
+
+def get_historical_period_aggregates(
+    province: str,
+    district: str,
+    commune: str,
+    start_day: int,
+    end_day: int,
+    data_type: str = "precipitation",
+    weather_data_period: int = 30,
+) -> List[float]:
+    """
+    Return annual aggregate values (e.g. total rainfall) for the given period.
+    Used by the optimizer to compute trigger bounds from historical data.
+    Does not perform any statistical analysis; returns raw data only.
+
+    Args:
+        province: Province name in canonical format.
+        district: District name in canonical format.
+        commune: Commune name in canonical format.
+        start_day: Start day of period (0-indexed day of year).
+        end_day: End day of period (0-indexed; may exceed 365 for cross-year periods).
+        data_type: "precipitation" or "temperature".
+        weather_data_period: Number of years to include (default 30).
+
+    Returns:
+        List of aggregate values, one per year, in chronological order.
+        For precipitation: sum of daily values in the period each year.
+        Empty list if location invalid or insufficient data.
+    """
+    try:
+        if not validate_location(province, district, commune):
+            return []
+        df = _get_weather_data(province, data_type)
+        commune_column = to_climate_column_name(district, commune)
+        if commune_column not in df.columns:
+            return []
+    except (ValueError, FileNotFoundError):
+        return []
+
+    years = sorted(df["Date"].dt.year.unique())[-weather_data_period:]
+    if len(years) < 2:
+        return []
+
+    aggregates = []
+    for year in years:
+        year_start = datetime(year, 1, 1) + timedelta(days=start_day)
+        year_end = datetime(year, 1, 1) + timedelta(days=end_day)
+        period_data = df[(df["Date"] >= year_start) & (df["Date"] <= year_end)][commune_column]
+        if data_type == "temperature":
+            period_data = period_data[period_data != -999]
+        if len(period_data) == 0:
+            continue
+        total = float(period_data.sum())
+        aggregates.append(total)
+    return aggregates
+
+
 # Main function
 
 def calculate_insure_smart_premium(

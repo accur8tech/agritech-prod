@@ -321,10 +321,11 @@ export interface Database {
           id: string
           created_by_user_id: string
           enrollment_id: string | null
+          name: string | null
           trigger_window: string | null
           trigger_value: number | null
           payout: number
-          status: 'pending' | 'approved' | 'paid' | 'rejected'
+          status: 'under_process' | 'clear' | 'paid' | 'rejected' | 'pending' | 'approved'
           termsheet_snapshot: any
           peril_breakdown: any
           created_at: string
@@ -334,10 +335,11 @@ export interface Database {
           id?: string
           created_by_user_id: string
           enrollment_id?: string | null
+          name?: string | null
           trigger_window?: string | null
           trigger_value?: number | null
           payout: number
-          status?: 'pending' | 'approved' | 'paid' | 'rejected'
+          status?: 'under_process' | 'clear' | 'paid' | 'rejected' | 'pending' | 'approved'
           termsheet_snapshot?: any
           peril_breakdown?: any
           created_at?: string
@@ -347,10 +349,11 @@ export interface Database {
           id?: string
           created_by_user_id?: string
           enrollment_id?: string | null
+          name?: string | null
           trigger_window?: string | null
           trigger_value?: number | null
           payout?: number
-          status?: 'pending' | 'approved' | 'paid' | 'rejected'
+          status?: 'under_process' | 'clear' | 'paid' | 'rejected' | 'pending' | 'approved'
           termsheet_snapshot?: any
           peril_breakdown?: any
           created_at?: string

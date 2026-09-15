@@ -85,7 +85,7 @@ export default function OperationsDashboardPage() {
               <ShieldCheckIcon className="h-6 w-6 text-yellow-600" />
             </div>
             <div className="ml-4">
-              <p className="text-sm font-medium text-gray-600">Pending Claims</p>
+              <p className="text-sm font-medium text-gray-600">Open Claims</p>
               <p className="text-2xl font-bold text-gray-900">
                 {pendingClaimsCount ?? 0}
               </p>

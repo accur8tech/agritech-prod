@@ -10,6 +10,8 @@ import {
   TableRow,
 } from "@/components/ui/table"
 
+import { getWeatherAvailabilityMessage } from "@/lib/claimStatus"
+
 const PERIL_LABELS: Record<string, string> = {
   LRI: "Low rainfall (drought)",
   ERI: "Excess rainfall",
@@ -63,6 +65,7 @@ export type ClaimEvalViewModel = {
   peril_breakdown?: any
   weather_snapshot?: any
   data_available_through?: Record<string, string | null>
+  evaluation_end?: string | null
   location?: {
     country?: string
     province?: string
@@ -97,6 +100,16 @@ export function ClaimResultSummary({
   const hasInsufficient = periods.some((p) =>
     (p.perils || []).some((peril: any) => peril.insufficient_data)
   )
+  const weatherMessage = getWeatherAvailabilityMessage({
+    perilBreakdown: result.peril_breakdown,
+    weatherSnapshot: weather,
+    dataAvailableThrough: result.data_available_through,
+    evaluationEnd:
+      result.evaluation_end ||
+      weather?.date_end ||
+      periods[periods.length - 1]?.end_date ||
+      null,
+  })
 
   return (
     <div className="space-y-5">
@@ -138,10 +151,16 @@ export function ClaimResultSummary({
         </div>
       </div>
 
-      {hasInsufficient && (
+      {weatherMessage && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          {weatherMessage}
+        </div>
+      )}
+
+      {!weatherMessage && hasInsufficient && (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
           Weather data is incomplete for part of this period, so some amounts may show as
-          $0.00. Try dates that have already passed, or check again later.
+          $0.00. Please check again later, or use dates that already have published data.
         </div>
       )}
 
@@ -259,13 +278,9 @@ export function ClaimResultSummary({
               <div className="font-medium text-gray-900">
                 {(weather.datasets || [])
                   .map((d: string) =>
-                    d === "CHIRPS"
-                      ? "Rainfall"
-                      : d === "ERA5_LAND"
-                        ? "Temperature"
-                        : d
+                    d === "ERA5_LAND" || d === "ERA5-Land" ? "ERA5" : d
                   )
-                  .join(", ") || "Satellite weather"}
+                  .join(", ") || "—"}
               </div>
               {weather.fetched_at && (
                 <div className="text-xs text-gray-500 mt-1">

@@ -81,7 +81,7 @@ export function useClaim(id: string) {
 export function usePendingClaimsCount() {
   return useQuery({
     queryKey: claimKeys.pendingCount(),
-    queryFn: () => ClaimsService.countByStatus('pending'),
+    queryFn: () => ClaimsService.countOpenClaims(),
     staleTime: 60 * 1000,
   })
 }
@@ -109,18 +109,22 @@ export function useUpdateClaimStatus() {
       id,
       status,
       notes,
+      rejectionReason,
     }: {
       id: string
       status: ClaimStatus
       notes?: string
-    }) => ClaimsService.updateClaimStatus(id, status, { notes }),
+      rejectionReason?: string
+    }) => ClaimsService.updateClaimStatus(id, status, { notes, rejectionReason }),
     onSuccess: (_, vars) => {
       queryClient.invalidateQueries({ queryKey: claimKeys.all })
       const labels: Record<string, string> = {
-        approved: 'approved',
+        under_process: 'moved to under process',
+        clear: 'marked as clear',
         rejected: 'rejected',
         paid: 'marked as paid',
-        pending: 'set back to pending',
+        pending: 'moved to under process',
+        approved: 'moved to under process',
       }
       toast.success(`Claim ${labels[vars.status] || vars.status}`)
     },

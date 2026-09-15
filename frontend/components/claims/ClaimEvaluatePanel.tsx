@@ -33,6 +33,11 @@ import {
 } from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  defaultStatusForPayout,
+  friendlyWeatherFetchError,
+  getPolicyClaimContext,
+} from "@/lib/claimStatus"
 import { ClaimResultSummary } from "./ClaimResultSummary"
 
 type EvalResult = {
@@ -96,7 +101,13 @@ async function pollTask(taskId: string, onTick?: (status: string) => void): Prom
   throw new Error("Claim evaluation timed out. Try a shorter date window.")
 }
 
-export function ClaimEvaluatePanel({ onSaved }: { onSaved?: () => void }) {
+export function ClaimEvaluatePanel({
+  onSaved,
+  onStartAnother,
+}: {
+  onSaved?: (claimId?: string) => void
+  onStartAnother?: () => void
+}) {
   const createClaim = useCreateClaim()
   const [mode, setMode] = useState<"manual" | "product">("manual")
   const [country, setCountry] = useState<CountryCode>("Cambodia")
@@ -117,6 +128,7 @@ export function ClaimEvaluatePanel({ onSaved }: { onSaved?: () => void }) {
   const [result, setResult] = useState<EvalResult | null>(null)
   const [lastPayload, setLastPayload] = useState<ClaimEvaluatePayload | null>(null)
   const [lastError, setLastError] = useState<string | null>(null)
+  const [claimName, setClaimName] = useState("")
   const resultRef = useRef<HTMLDivElement | null>(null)
 
   const countryConfig = getCountryConfig(country)
@@ -238,6 +250,7 @@ export function ClaimEvaluatePanel({ onSaved }: { onSaved?: () => void }) {
   const runEvaluate = async () => {
     setResult(null)
     setLastError(null)
+    setClaimName("")
     setRunning(true)
     setTaskStatus("Starting…")
     try {
@@ -257,7 +270,16 @@ export function ClaimEvaluatePanel({ onSaved }: { onSaved?: () => void }) {
         }
       })
       setResult(evalResult)
-      // Scroll result into view — form is long and the card used to sit below the fold
+      // Fresh suggestion for every check: location + actual trigger window (or evaluation dates)
+      const loc = payload.location
+      const place = [loc.commune, loc.district].filter(Boolean).join(", ")
+      const windowLabel =
+        evalResult.trigger_window ||
+        (payload.evaluation_start && payload.evaluation_end
+          ? `${payload.evaluation_start} – ${payload.evaluation_end}`
+          : "")
+      setClaimName([place, windowLabel].filter(Boolean).join(" · ").slice(0, 120))
+      // Scroll to the results card (not the status banner)
       requestAnimationFrame(() => {
         resultRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
       })
@@ -271,7 +293,9 @@ export function ClaimEvaluatePanel({ onSaved }: { onSaved?: () => void }) {
         err?.response?.data?.detail ||
         err?.message ||
         "Evaluation failed"
-      const text = typeof msg === "string" ? msg : JSON.stringify(msg)
+      const text = friendlyWeatherFetchError(
+        typeof msg === "string" ? msg : JSON.stringify(msg)
+      )
       setLastError(text)
       toast.error(text)
     } finally {
@@ -280,26 +304,82 @@ export function ClaimEvaluatePanel({ onSaved }: { onSaved?: () => void }) {
     }
   }
 
+  const policyContext = (() => {
+    if (!selectedProduct && mode !== "product") {
+      return getPolicyClaimContext({
+        coverageStart: evaluationStart,
+        coverageEnd: evaluationEnd,
+        evaluationStart,
+        evaluationEnd,
+      })
+    }
+    return getPolicyClaimContext({
+      coverageStart:
+        selectedProduct?.coverage_start_date ||
+        selectedProduct?.triggers?.coveragePeriods?.[0]?.startDate ||
+        evaluationStart,
+      coverageEnd:
+        selectedProduct?.coverage_end_date ||
+        (selectedProduct?.triggers?.coveragePeriods || []).slice(-1)[0]
+          ?.endDate ||
+        evaluationEnd,
+      evaluationStart,
+      evaluationEnd,
+    })
+  })()
+
   const saveClaim = async () => {
     if (!result) return
+    const trimmedName = claimName.trim()
+    if (!trimmedName) {
+      toast.error("Please enter a claim name before saving")
+      return
+    }
     try {
-      await createClaim.mutateAsync({
+      const status = defaultStatusForPayout(Number(result.payout))
+      const baseSnap = result.termsheet_snapshot || { termsheet: {}, meta: {} }
+      const termsheet_snapshot = {
+        ...baseSnap,
+        meta: {
+          ...(baseSnap.meta || {}),
+          source: lastPayload?.source || baseSnap.meta?.source || "manual",
+          product_id: lastPayload?.product_id || null,
+          location: lastPayload?.location || baseSnap.meta?.location,
+          evaluation_start: lastPayload?.evaluation_start || evaluationStart,
+          evaluation_end: lastPayload?.evaluation_end || evaluationEnd,
+          policy_active: policyContext.policyActive,
+          is_partial_claim: policyContext.isPartialClaim,
+          coverage_label: policyContext.coverageLabel,
+          evaluation_label: policyContext.evaluationLabel,
+        },
+      }
+
+      const saved = await createClaim.mutateAsync({
+        name: trimmedName,
         enrollment_id: lastPayload?.enrollment_id ?? null,
         trigger_window: result.trigger_window || null,
         trigger_value: result.trigger_value ?? null,
         payout: result.payout,
-        status: "pending",
-        termsheet_snapshot: result.termsheet_snapshot,
+        status,
+        termsheet_snapshot,
         peril_breakdown: {
           periods: result.peril_breakdown,
           weather_snapshot: result.weather_snapshot,
           data_available_through: result.data_available_through,
         },
       })
-      onSaved?.()
+      onSaved?.(saved?.id)
     } catch {
       // toast handled in hook
     }
+  }
+
+  const resetForNextCheck = () => {
+    setResult(null)
+    setLastError(null)
+    setLastPayload(null)
+    setClaimName("")
+    onStartAnother?.()
   }
 
   const updatePeril = (index: number, patch: Partial<ManualPerilForm>) => {
@@ -308,17 +388,16 @@ export function ClaimEvaluatePanel({ onSaved }: { onSaved?: () => void }) {
 
   return (
     <div className="space-y-6">
-      {(running || result || lastError) && (
+      {(running || lastError || (result && !running)) && (
         <div
-          ref={resultRef}
-          className={`rounded-lg border p-4 ${
+          className={`rounded-lg border px-4 py-3 ${
             lastError
               ? "border-red-200 bg-red-50"
-              : result?.triggered
-                ? "border-green-200 bg-green-50"
-                : result
-                  ? "border-amber-200 bg-amber-50"
-                  : "border-blue-200 bg-blue-50"
+              : running
+                ? "border-blue-200 bg-blue-50"
+                : result?.triggered
+                  ? "border-green-200 bg-green-50"
+                  : "border-amber-200 bg-amber-50"
           }`}
         >
           {running && (
@@ -326,40 +405,20 @@ export function ClaimEvaluatePanel({ onSaved }: { onSaved?: () => void }) {
               Checking coverage… {taskStatus || "please wait"}
             </p>
           )}
-          {lastError && (
+          {lastError && !running && (
             <p className="text-sm font-medium text-red-800">
               Could not complete the check: {lastError}
             </p>
           )}
-          {result && !running && (
-            <div className="space-y-3">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <p className="text-lg font-semibold text-gray-900">
-                    {result.triggered ? "Payout applies" : "No payout for this period"}
-                  </p>
-                  <p className="text-sm text-gray-600 mt-1">
-                    Amount{" "}
-                    <span className="font-semibold">
-                      ${Number(result.payout).toFixed(2)}
-                    </span>
-                    {result.trigger_window ? ` · ${result.trigger_window}` : ""}
-                  </p>
-                  {result.peril_breakdown?.[0]?.perils?.[0]?.insufficient_data && (
-                    <p className="text-sm text-amber-800 mt-2">
-                      Weather data for part of this period is not available yet. Try dates
-                      that have already passed, or check again in a few days.
-                    </p>
-                  )}
-                  <p className="text-xs text-gray-500 mt-2">
-                    Save this result to add it to your claims list for review.
-                  </p>
-                </div>
-                <Button onClick={saveClaim} disabled={createClaim.isPending}>
-                  Save to claims list
-                </Button>
-              </div>
-            </div>
+          {result && !running && !lastError && (
+            <p className="text-sm font-medium text-gray-900">
+              {result.triggered ? "Payout applies" : "No payout for this period"}
+              {" · "}
+              <span className="font-semibold">
+                ${Number(result.payout).toFixed(2)}
+              </span>
+              {result.trigger_window ? ` · ${result.trigger_window}` : ""}
+            </p>
           )}
         </div>
       )}
@@ -614,6 +673,26 @@ export function ClaimEvaluatePanel({ onSaved }: { onSaved?: () => void }) {
                 />
               </div>
             </div>
+
+            {(policyContext.policyActive || policyContext.isPartialClaim) && (
+              <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900 space-y-1">
+                {policyContext.policyActive && (
+                  <p>
+                    <span className="font-medium">Policy is still active.</span> Full
+                    coverage runs {policyContext.coverageLabel}. You can process a
+                    partial claim for the dates below and check again later.
+                  </p>
+                )}
+                {policyContext.isPartialClaim && (
+                  <p>
+                    <span className="font-medium">Partial claim check.</span> Selected
+                    dates ({policyContext.evaluationLabel}) are only part of the full
+                    coverage window.
+                  </p>
+                )}
+              </div>
+            )}
+
             <p className="text-sm text-gray-500">
               We look up the latest weather for this location. This may take a minute or two.
             </p>
@@ -625,14 +704,52 @@ export function ClaimEvaluatePanel({ onSaved }: { onSaved?: () => void }) {
       </Card>
 
       {result && (
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between gap-3 space-y-0">
+        <Card ref={resultRef}>
+          <CardHeader className="flex flex-row items-center justify-between gap-3 space-y-0 flex-wrap">
             <CardTitle>Results</CardTitle>
-            <Button onClick={saveClaim} disabled={createClaim.isPending}>
-              Save to claims list
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                onClick={saveClaim}
+                disabled={createClaim.isPending || !claimName.trim()}
+              >
+                {Number(result.payout) > 0
+                  ? "Save as under process"
+                  : "Save as clear"}
+              </Button>
+              <Button variant="outline" onClick={resetForNextCheck}>
+                Check another
+              </Button>
+            </div>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-4">
+            <div className="max-w-md">
+              <Label htmlFor="claim-name-results">Claim name</Label>
+              <Input
+                id="claim-name-results"
+                className="mt-1"
+                placeholder="Name this claim so you can find it in the list"
+                value={claimName}
+                onChange={(e) => setClaimName(e.target.value)}
+                maxLength={120}
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Required before saving. Suggested from this check’s location and window —
+                edit as needed.
+              </p>
+            </div>
+            {(policyContext.policyActive || policyContext.isPartialClaim) && (
+              <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900">
+                {policyContext.policyActive && (
+                  <p className="font-medium">Policy is still active.</p>
+                )}
+                {policyContext.isPartialClaim && (
+                  <p>
+                    Partial claim for {policyContext.evaluationLabel}. Remaining
+                    coverage can be checked in a later review.
+                  </p>
+                )}
+              </div>
+            )}
             <ClaimResultSummary
               result={{
                 triggered: result.triggered,
@@ -643,6 +760,7 @@ export function ClaimEvaluatePanel({ onSaved }: { onSaved?: () => void }) {
                 peril_breakdown: result.peril_breakdown,
                 weather_snapshot: result.weather_snapshot,
                 data_available_through: result.data_available_through,
+                evaluation_end: lastPayload?.evaluation_end || evaluationEnd,
                 location: lastPayload?.location,
               }}
             />

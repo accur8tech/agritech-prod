@@ -5,7 +5,6 @@ import {
   DocumentArrowDownIcon,
   MagnifyingGlassIcon,
   PlusIcon,
-  ShieldCheckIcon,
 } from "@heroicons/react/24/outline"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -26,21 +25,24 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { useClaims, useUpdateClaimStatus } from "@/lib/hooks"
+import { useClaims } from "@/lib/hooks"
 import type { ClaimStatus } from "@/lib/database.types"
 import { ClaimEvaluatePanel } from "./ClaimEvaluatePanel"
 import { ClaimDetailDialog } from "./ClaimDetailDialog"
+import {
+  CLAIM_STATUS_BADGE_CLASS,
+  claimStatusLabel,
+  isOpenClaimStatus,
+  normalizeClaimStatus,
+} from "@/lib/claimStatus"
 
-function statusBadge(status: ClaimStatus) {
-  const map: Record<ClaimStatus, string> = {
-    pending: "bg-yellow-100 text-yellow-800",
-    approved: "bg-blue-100 text-blue-800",
-    paid: "bg-green-100 text-green-800",
-    rejected: "bg-red-100 text-red-800",
-  }
+function statusBadge(status: ClaimStatus | string) {
   return (
-    <Badge className={map[status]} variant="secondary">
-      {status}
+    <Badge
+      className={CLAIM_STATUS_BADGE_CLASS[status] || "bg-gray-100 text-gray-700"}
+      variant="secondary"
+    >
+      {claimStatusLabel(status)}
     </Badge>
   )
 }
@@ -55,26 +57,35 @@ function formatMoney(n: number | null | undefined) {
 function exportClaimsCsv(rows: any[]) {
   const headers = [
     "id",
+    "name",
     "status",
     "payout",
     "trigger_window",
     "trigger_value",
-    "source",
+    "type",
+    "policy_active",
+    "partial_claim",
+    "rejection_reason",
     "created_at",
   ]
   const lines = [
     headers.join(","),
-    ...rows.map((r) =>
-      [
+    ...rows.map((r) => {
+      const meta = r.termsheet_snapshot?.meta || {}
+      return [
         r.id,
-        r.status,
+        JSON.stringify(r.name || ""),
+        claimStatusLabel(r.status),
         r.payout,
         JSON.stringify(r.trigger_window || ""),
         r.trigger_value ?? "",
-        r.termsheet_snapshot?.meta?.source || "",
+        meta.source || "",
+        meta.policy_active ?? "",
+        meta.is_partial_claim ?? "",
+        JSON.stringify(meta.rejection_reason || ""),
         r.created_at,
       ].join(",")
-    ),
+    }),
   ]
   const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" })
   const url = URL.createObjectURL(blob)
@@ -87,40 +98,57 @@ function exportClaimsCsv(rows: any[]) {
 
 export function ClaimsManagement() {
   const [tab, setTab] = useState("list")
-  const [statusFilter, setStatusFilter] = useState<ClaimStatus | "all">("all")
+  const [statusFilter, setStatusFilter] = useState<ClaimStatus | "all" | "open">(
+    "all"
+  )
   const [search, setSearch] = useState("")
   const [selectedId, setSelectedId] = useState<string | null>(null)
 
-  const { data: claims = [], isLoading, refetch } = useClaims(
-    statusFilter === "all" ? undefined : statusFilter
-  )
-  const updateStatus = useUpdateClaimStatus()
+  const { data: claims = [], isLoading, refetch } = useClaims()
 
   const filtered = useMemo(() => {
+    let rows = claims as any[]
+
+    if (statusFilter === "open") {
+      rows = rows.filter((c) => isOpenClaimStatus(c.status))
+    } else if (statusFilter !== "all") {
+      rows = rows.filter(
+        (c) => normalizeClaimStatus(c.status) === normalizeClaimStatus(statusFilter)
+      )
+    }
+
     const q = search.trim().toLowerCase()
-    if (!q) return claims
-    return claims.filter((c: any) => {
+    if (!q) return rows
+    return rows.filter((c: any) => {
       const farmer = c.enrollment?.farmer?.english_name || ""
       const product = c.enrollment?.product?.name || ""
       const source = c.termsheet_snapshot?.meta?.source || ""
+      const name = c.name || ""
       return (
         c.id?.toLowerCase().includes(q) ||
+        name.toLowerCase().includes(q) ||
         farmer.toLowerCase().includes(q) ||
         product.toLowerCase().includes(q) ||
         source.toLowerCase().includes(q) ||
         (c.trigger_window || "").toLowerCase().includes(q)
       )
     })
-  }, [claims, search])
+  }, [claims, search, statusFilter])
 
-  const pendingIds = filtered
-    .filter((c: any) => c.status === "pending")
-    .map((c: any) => c.id)
+  const openClaimIds = useMemo(
+    () =>
+      (claims as any[])
+        .filter((c) => isOpenClaimStatus(c.status))
+        .map((c) => c.id as string),
+    [claims]
+  )
 
-  const bulkApprove = async () => {
-    for (const id of pendingIds) {
-      await updateStatus.mutateAsync({ id, status: "approved" })
+  const openNextClaim = () => {
+    if (openClaimIds.length) {
+      setSelectedId(openClaimIds[0])
+      return
     }
+    setTab("evaluate")
   }
 
   return (
@@ -129,10 +157,10 @@ export function ClaimsManagement() {
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Claims Management</h1>
           <p className="text-gray-600 mt-2">
-            Check coverage outcomes and review claims for approval
+            Check coverage outcomes and move claims from under process to paid or clear
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           <Button
             variant="outline"
             onClick={() => exportClaimsCsv(filtered)}
@@ -141,13 +169,10 @@ export function ClaimsManagement() {
             <DocumentArrowDownIcon className="h-4 w-4 mr-2" />
             Export
           </Button>
-          <Button
-            variant="outline"
-            onClick={bulkApprove}
-            disabled={!pendingIds.length || updateStatus.isPending}
-          >
-            <ShieldCheckIcon className="h-4 w-4 mr-2" />
-            Bulk Approve
+          <Button variant="outline" onClick={openNextClaim}>
+            {openClaimIds.length
+              ? `Next open claim (${openClaimIds.length})`
+              : "Start a check"}
           </Button>
           <Button onClick={() => setTab("evaluate")}>
             <PlusIcon className="h-4 w-4 mr-2" />
@@ -168,22 +193,25 @@ export function ClaimsManagement() {
               <MagnifyingGlassIcon className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
               <Input
                 className="pl-9"
-                placeholder="Search by farmer, product, or coverage window…"
+                placeholder="Search by claim name, farmer, product, or window…"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
               />
             </div>
             <Select
               value={statusFilter}
-              onValueChange={(v) => setStatusFilter(v as ClaimStatus | "all")}
+              onValueChange={(v) =>
+                setStatusFilter(v as ClaimStatus | "all" | "open")
+              }
             >
-              <SelectTrigger className="w-[180px]">
+              <SelectTrigger className="w-[200px]">
                 <SelectValue placeholder="Status" />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All statuses</SelectItem>
-                <SelectItem value="pending">Pending</SelectItem>
-                <SelectItem value="approved">Approved</SelectItem>
+                <SelectItem value="open">Open (under process)</SelectItem>
+                <SelectItem value="under_process">Under process</SelectItem>
+                <SelectItem value="clear">Clear</SelectItem>
                 <SelectItem value="paid">Paid</SelectItem>
                 <SelectItem value="rejected">Rejected</SelectItem>
               </SelectContent>
@@ -194,11 +222,12 @@ export function ClaimsManagement() {
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead>Claim name</TableHead>
                   <TableHead>Created</TableHead>
-                      <TableHead>Type</TableHead>
+                  <TableHead>Type</TableHead>
                   <TableHead>Farmer / Product</TableHead>
                   <TableHead>Window</TableHead>
-                  <TableHead className="text-right">Payout</TableHead>
+                  <TableHead className="text-right">Amount</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
@@ -206,41 +235,57 @@ export function ClaimsManagement() {
               <TableBody>
                 {isLoading && (
                   <TableRow>
-                    <TableCell colSpan={7} className="text-center text-gray-500 py-10">
+                    <TableCell colSpan={8} className="text-center text-gray-500 py-10">
                       Loading claims…
                     </TableCell>
                   </TableRow>
                 )}
                 {!isLoading && filtered.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={7} className="text-center text-gray-500 py-10">
-                      No claims yet. Use “Check coverage” to see if a payout applies, then save the result here.
+                    <TableCell colSpan={8} className="text-center text-gray-500 py-10">
+                      No claims yet. Use “Check coverage” to see if a payout applies, then
+                      save the result here.
                     </TableCell>
                   </TableRow>
                 )}
                 {filtered.map((claim: any) => {
                   const source = claim.termsheet_snapshot?.meta?.source || "—"
+                  const meta = claim.termsheet_snapshot?.meta || {}
                   const farmer = claim.enrollment?.farmer?.english_name
                   const product = claim.enrollment?.product?.name
                   return (
                     <TableRow key={claim.id}>
+                      <TableCell className="text-sm max-w-[220px]">
+                        <div className="font-medium text-gray-900 truncate">
+                          {claim.name || "Untitled claim"}
+                        </div>
+                      </TableCell>
                       <TableCell className="whitespace-nowrap text-sm">
                         {claim.created_at
                           ? new Date(claim.created_at).toLocaleDateString()
                           : "—"}
                       </TableCell>
-                      <TableCell className="capitalize text-sm">
-                        {source === "manual"
-                          ? "Manual check"
-                          : source === "product"
-                            ? "Product"
-                            : source === "enrollment"
-                              ? "Policy"
-                              : "—"}
+                      <TableCell className="text-sm">
+                        <div>
+                          {source === "manual"
+                            ? "Manual check"
+                            : source === "product"
+                              ? "Product"
+                              : source === "enrollment"
+                                ? "Policy"
+                                : "—"}
+                        </div>
+                        {meta.is_partial_claim && (
+                          <div className="text-xs text-blue-700">Partial</div>
+                        )}
+                        {meta.policy_active && (
+                          <div className="text-xs text-blue-700">Policy active</div>
+                        )}
                       </TableCell>
                       <TableCell className="text-sm">
                         <div className="font-medium text-gray-900">
-                          {farmer || (source === "manual" ? "Manual check" : "Product check")}
+                          {farmer ||
+                            (source === "manual" ? "Manual check" : "Product check")}
                         </div>
                         <div className="text-gray-500">{product || "—"}</div>
                       </TableCell>
@@ -271,9 +316,14 @@ export function ClaimsManagement() {
         <TabsContent value="evaluate" className="mt-6" forceMount>
           <div className={tab === "evaluate" ? "block" : "hidden"}>
             <ClaimEvaluatePanel
-              onSaved={() => {
+              onSaved={(claimId) => {
                 refetch()
                 setTab("list")
+                if (claimId) setSelectedId(claimId)
+              }}
+              onStartAnother={() => {
+                // stay on evaluate tab for the next check
+                setTab("evaluate")
               }}
             />
           </div>
@@ -283,8 +333,15 @@ export function ClaimsManagement() {
       <ClaimDetailDialog
         claimId={selectedId}
         open={!!selectedId}
+        openClaimIds={openClaimIds}
+        onSelectClaim={(id) => setSelectedId(id)}
+        onStartNewCheck={() => {
+          setSelectedId(null)
+          setTab("evaluate")
+        }}
         onOpenChange={(open) => {
           if (!open) setSelectedId(null)
+          refetch()
         }}
       />
     </div>

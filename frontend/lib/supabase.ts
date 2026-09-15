@@ -945,7 +945,7 @@ export class ClaimsService {
     return data
   }
 
-  static async countByStatus(status: Claim['status'] = 'pending') {
+  static async countByStatus(status: Claim['status'] = 'under_process') {
     const { count, error } = await supabase
       .from('claims')
       .select('*', { count: 'exact', head: true })
@@ -955,8 +955,20 @@ export class ClaimsService {
     return count || 0
   }
 
+  /** Open claims needing action (under process + legacy pending/approved) */
+  static async countOpenClaims() {
+    const { count, error } = await supabase
+      .from('claims')
+      .select('*', { count: 'exact', head: true })
+      .in('status', ['under_process', 'pending', 'approved'])
+
+    if (error) throw error
+    return count || 0
+  }
+
   static async createClaim(claimData: {
     enrollment_id?: string | null
+    name?: string | null
     trigger_window?: string | null
     trigger_value?: number | null
     payout: number
@@ -967,15 +979,21 @@ export class ClaimsService {
     const user = await getCurrentUser()
     if (!user) throw new Error('User not authenticated')
 
+    const trimmedName = claimData.name?.trim() || null
+    if (!trimmedName) {
+      throw new Error('Please enter a claim name')
+    }
+
     const { data, error } = await supabase
       .from('claims')
       .insert({
         created_by_user_id: user.id,
         enrollment_id: claimData.enrollment_id ?? null,
+        name: trimmedName,
         trigger_window: claimData.trigger_window ?? null,
         trigger_value: claimData.trigger_value ?? null,
         payout: claimData.payout,
-        status: claimData.status || 'pending',
+        status: claimData.status || 'under_process',
         termsheet_snapshot: claimData.termsheet_snapshot ?? null,
         peril_breakdown: claimData.peril_breakdown ?? null,
       })
@@ -989,10 +1007,14 @@ export class ClaimsService {
   static async updateClaimStatus(
     id: string,
     status: Claim['status'],
-    extras?: { notes?: string }
+    extras?: { notes?: string; rejectionReason?: string }
   ) {
     const user = await getCurrentUser()
     if (!user) throw new Error('User not authenticated')
+
+    if (status === 'rejected' && !extras?.rejectionReason?.trim()) {
+      throw new Error('Please provide a reason for rejection')
+    }
 
     const existing = await this.getClaimById(id)
     const snap = existing?.termsheet_snapshot || {}
@@ -1001,6 +1023,9 @@ export class ClaimsService {
       meta: {
         ...(snap.meta || {}),
         ...(extras?.notes != null ? { notes: extras.notes } : {}),
+        ...(extras?.rejectionReason != null
+          ? { rejection_reason: extras.rejectionReason.trim() }
+          : {}),
         reviewed_by_user_id: user.id,
         reviewed_at: new Date().toISOString(),
         previous_status: existing?.status,

@@ -379,7 +379,7 @@ export class ProductsService {
   static async getProducts() {
     const { data, error } = await supabase
       .from('products')
-      .select('id, name, crop, status')
+      .select('id, name, crop, status, region, coverage_start_date, coverage_end_date')
       .eq('status', 'live')
       .order('name', { ascending: true })
 

@@ -7,6 +7,8 @@ import { ProductsService } from "@/lib/supabase"
 import { useCreateClaim } from "@/lib/hooks"
 import {
   extractLocationFromProductRegion,
+  formatPerilTypeLabel,
+  formatProductClaimSelectLabel,
   getTermsheetDateWindow,
   mapManualFormToClaimTermsheet,
   mapProductToClaimTermsheet,
@@ -157,6 +159,9 @@ export function ClaimEvaluatePanel({
       .then((p) => {
         setSelectedProduct(p)
         const regionLoc = extractLocationFromProductRegion(p.region)
+        if (regionLoc.country && SUPPORTED_COUNTRIES.includes(regionLoc.country as CountryCode)) {
+          setCountry(regionLoc.country as CountryCode)
+        }
         if (regionLoc.province) setProvince(regionLoc.province)
         if (regionLoc.district) setDistrict(regionLoc.district)
         if (regionLoc.commune) setCommune(regionLoc.commune)
@@ -170,17 +175,36 @@ export function ClaimEvaluatePanel({
         } else if (p.coverage_start_date && p.coverage_end_date) {
           setEvaluationStart(p.coverage_start_date)
           setEvaluationEnd(p.coverage_end_date)
+        } else {
+          setEvaluationStart("")
+          setEvaluationEnd("")
         }
       })
       .catch(() => toast.error("Failed to load product"))
   }, [productId])
 
   // Nigeria often has no ward list: auto-fill commune = district for API contract
+  // Skip in product mode so location stays locked to the selected product.
   useEffect(() => {
+    if (mode === "product") return
     if (!countryConfig.hasCommuneLevel && district) {
       setCommune(district)
     }
-  }, [country, district, countryConfig.hasCommuneLevel])
+  }, [mode, country, district, countryConfig.hasCommuneLevel])
+
+  const productTermsheet = useMemo(
+    () => (selectedProduct ? mapProductToClaimTermsheet(selectedProduct) : null),
+    [selectedProduct]
+  )
+
+  const productLocationComplete = useMemo(() => {
+    if (!selectedProduct) return false
+    const loc = extractLocationFromProductRegion(selectedProduct.region)
+    const communeValue = loc.commune || (!countryConfig.hasCommuneLevel ? loc.district : "")
+    return !!(loc.province && loc.district && communeValue)
+  }, [selectedProduct, countryConfig.hasCommuneLevel])
+
+  const productDatesComplete = !!(evaluationStart && evaluationEnd)
 
   const resolveCommune = () => {
     if (countryConfig.hasCommuneLevel) return commune
@@ -230,7 +254,17 @@ export function ClaimEvaluatePanel({
     }
 
     if (!selectedProduct) throw new Error("Please select a product")
-    const termsheet = mapProductToClaimTermsheet(selectedProduct)
+    if (!productLocationComplete) {
+      throw new Error(
+        "This product has no complete location set. Update the product region, or use Enter terms manually."
+      )
+    }
+    if (!productDatesComplete) {
+      throw new Error(
+        "This product has no coverage dates set. Update the product, or use Enter terms manually."
+      )
+    }
+    const termsheet = productTermsheet || mapProductToClaimTermsheet(selectedProduct)
     if (!termsheet.periods.length) {
       throw new Error("This product has no coverage terms to check")
     }
@@ -551,20 +585,141 @@ export function ClaimEvaluatePanel({
                   <SelectTrigger>
                     <SelectValue placeholder="Select a product" />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className="max-w-[min(100vw-2rem,36rem)]">
                     {products.map((p) => (
-                      <SelectItem key={p.id} value={p.id}>
-                        {p.name} {p.crop ? `(${p.crop})` : ""}
+                      <SelectItem key={p.id} value={p.id} className="whitespace-normal">
+                        {formatProductClaimSelectLabel(p)}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               </div>
+
+              {selectedProduct && productTermsheet && (
+                <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 space-y-3">
+                  <div>
+                    <h4 className="text-sm font-medium text-gray-900">Termsheet preview</h4>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
+                    <div>
+                      <span className="text-gray-500">Location: </span>
+                      <span className="text-gray-900">
+                        {[commune, district, province].filter(Boolean).join(", ") ||
+                          "Not set on product"}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-gray-500">Coverage: </span>
+                      <span className="text-gray-900">
+                        {evaluationStart && evaluationEnd
+                          ? `${evaluationStart} – ${evaluationEnd}`
+                          : "Not set on product"}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-gray-500">Sum insured: </span>
+                      <span className="text-gray-900">
+                        ${Number(productTermsheet.sumInsured || 0).toLocaleString()}
+                      </span>
+                    </div>
+                    {selectedProduct.crop && (
+                      <div>
+                        <span className="text-gray-500">Crop: </span>
+                        <span className="text-gray-900">{selectedProduct.crop}</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {productTermsheet.periods.length === 0 ? (
+                    <p className="text-sm text-amber-800">
+                      This product has no coverage periods configured.
+                    </p>
+                  ) : (
+                    <div className="overflow-x-auto rounded-md border border-gray-200 bg-white">
+                      <table className="min-w-full text-sm">
+                        <thead className="bg-gray-50 text-left text-gray-600">
+                          <tr>
+                            <th className="px-3 py-2 font-medium">Period</th>
+                            <th className="px-3 py-2 font-medium">Type</th>
+                            <th className="px-3 py-2 font-medium">Trigger</th>
+                            <th className="px-3 py-2 font-medium">Duration</th>
+                            <th className="px-3 py-2 font-medium">Exit</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {productTermsheet.periods.map((period, periodIdx) =>
+                            (period.perils.length ? period.perils : [null]).map(
+                              (peril, perilIdx) => {
+                                const exitVal =
+                                  peril?.exit_trigger ?? peril?.exit ?? null
+                                return (
+                                  <tr
+                                    key={`${periodIdx}-${perilIdx}`}
+                                    className="border-t border-gray-100"
+                                  >
+                                    <td className="px-3 py-2 text-gray-900 whitespace-nowrap">
+                                      {period.startDate && period.endDate
+                                        ? `${period.startDate} – ${period.endDate}`
+                                        : `Period ${periodIdx + 1}`}
+                                    </td>
+                                    <td className="px-3 py-2 text-gray-900">
+                                      {formatPerilTypeLabel(peril?.peril_type)}
+                                    </td>
+                                    <td className="px-3 py-2 text-gray-900">
+                                      {peril != null ? peril.trigger : "—"}
+                                    </td>
+                                    <td className="px-3 py-2 text-gray-900">
+                                      {peril != null ? `${peril.duration} days` : "—"}
+                                    </td>
+                                    <td className="px-3 py-2 text-gray-900">
+                                      {exitVal != null ? exitVal : "—"}
+                                    </td>
+                                  </tr>
+                                )
+                              }
+                            )
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  {(!productLocationComplete || !productDatesComplete) && (
+                    <p className="text-sm text-amber-800">
+                      {!productLocationComplete
+                        ? "This product is missing a complete location. Update it on the product page, or use Enter terms manually."
+                        : "This product is missing coverage dates. Update it on the product page, or use Enter terms manually."}
+                    </p>
+                  )}
+                </div>
+              )}
+
+              <div className="space-y-3 pt-2">
+                <p className="text-sm text-gray-500">
+                  We look up the latest weather for this product&apos;s location. This may
+                  take a minute or two.
+                </p>
+                <Button
+                  onClick={runEvaluate}
+                  disabled={
+                    running ||
+                    !selectedProduct ||
+                    !productLocationComplete ||
+                    !productDatesComplete ||
+                    !(productTermsheet?.periods.length)
+                  }
+                >
+                  {running ? `Checking… ${taskStatus || ""}` : "Check for payout"}
+                </Button>
+              </div>
             </TabsContent>
           </Tabs>
 
+          {mode === "manual" && (
           <div className="border-t pt-4 space-y-4">
-            <h3 className="font-medium text-gray-900">Location and coverage dates</h3>
+            <div>
+              <h3 className="font-medium text-gray-900">Location and coverage dates</h3>
+            </div>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
               <div>
                 <Label>Country</Label>
@@ -700,6 +855,7 @@ export function ClaimEvaluatePanel({
               {running ? `Checking… ${taskStatus || ""}` : "Check for payout"}
             </Button>
           </div>
+          )}
         </CardContent>
       </Card>
 

@@ -1,10 +1,11 @@
 "use client"
 
-import React from "react"
+import React, { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { Input } from "@/components/ui/input"
 import { 
   Breadcrumb,
   BreadcrumbItem,
@@ -26,11 +27,15 @@ import {
   MoreHorizontal,
   TrendingUp,
   DollarSign,
-  FileText
+  FileText,
+  Pencil,
+  Check,
+  X,
 } from "lucide-react"
 import { toast } from "sonner"
 import Link from "next/link"
 import { ProductWithDetailedEnrollments } from "@/lib/database.types"
+import { useUpdateProduct } from "@/lib/hooks"
 
 interface ProductHeaderProps {
   product: ProductWithDetailedEnrollments
@@ -38,6 +43,15 @@ interface ProductHeaderProps {
 
 export function ProductHeader({ product }: ProductHeaderProps) {
   const router = useRouter()
+  const updateProduct = useUpdateProduct()
+  const [isEditingName, setIsEditingName] = useState(false)
+  const [draftName, setDraftName] = useState(product.name)
+
+  useEffect(() => {
+    if (!isEditingName) {
+      setDraftName(product.name)
+    }
+  }, [product.name, isEditingName])
 
   // Calculate metrics
   const totalEnrollments = product.enrollments?.length || 0
@@ -62,6 +76,32 @@ export function ProductHeader({ product }: ProductHeaderProps) {
 
   const handleAssign = () => {
     router.push(`/protected/operations-dashboard/products/${product.id}/assign`)
+  }
+
+  const cancelRename = () => {
+    setDraftName(product.name)
+    setIsEditingName(false)
+  }
+
+  const saveRename = async () => {
+    const trimmed = draftName.trim()
+    if (!trimmed) {
+      toast.error("Product name cannot be empty")
+      return
+    }
+    if (trimmed === product.name) {
+      setIsEditingName(false)
+      return
+    }
+    try {
+      await updateProduct.mutateAsync({
+        id: product.id,
+        updates: { name: trimmed },
+      })
+      setIsEditingName(false)
+    } catch {
+      // toast handled in hook
+    }
   }
 
   const getStatusColor = (status: string) => {
@@ -103,8 +143,60 @@ export function ProductHeader({ product }: ProductHeaderProps) {
       {/* Product Title and Status */}
       <div className="flex items-start justify-between">
         <div className="space-y-2">
-          <div className="flex items-center gap-3">
-            <h1 className="text-3xl font-bold text-gray-900">{product.name}</h1>
+          <div className="flex items-center gap-3 flex-wrap">
+            {isEditingName ? (
+              <div className="flex items-center gap-2 min-w-[16rem] flex-1">
+                <Input
+                  value={draftName}
+                  onChange={(e) => setDraftName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault()
+                      void saveRename()
+                    }
+                    if (e.key === "Escape") {
+                      e.preventDefault()
+                      cancelRename()
+                    }
+                  }}
+                  className="text-2xl font-bold h-11 max-w-xl"
+                  autoFocus
+                  maxLength={120}
+                  disabled={updateProduct.isPending}
+                  aria-label="Product name"
+                />
+                <Button
+                  size="sm"
+                  onClick={() => void saveRename()}
+                  disabled={updateProduct.isPending}
+                  className="bg-green-600 hover:bg-green-700"
+                >
+                  <Check className="h-4 w-4" />
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={cancelRename}
+                  disabled={updateProduct.isPending}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+            ) : (
+              <>
+                <h1 className="text-3xl font-bold text-gray-900">{product.name}</h1>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setIsEditingName(true)}
+                  className="h-8 px-2 text-gray-600"
+                  aria-label="Rename product"
+                  title="Rename product"
+                >
+                  <Pencil className="h-4 w-4" />
+                </Button>
+              </>
+            )}
             <Badge className={getStatusColor(product.status)}>
               {product.status.charAt(0).toUpperCase() + product.status.slice(1)}
             </Badge>

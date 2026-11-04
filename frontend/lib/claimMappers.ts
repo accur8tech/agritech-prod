@@ -283,3 +283,69 @@ export function extractLocationFromProductRegion(region: any): {
     commune: region.commune || region.ward,
   }
 }
+
+const PERIL_LABELS: Record<string, string> = {
+  LRI: 'Drought (low rainfall)',
+  ERI: 'Excess rain',
+  LTI: 'Cold (low temperature)',
+  HTI: 'Heat (high temperature)',
+}
+
+export function formatPerilTypeLabel(perilType?: string | null): string {
+  if (!perilType) return 'Coverage'
+  return PERIL_LABELS[perilType] || perilType
+}
+
+/** Short coverage window for dropdown labels, e.g. "Jun–Sep 2026" */
+export function formatCoverageRangeLabel(
+  start?: string | null,
+  end?: string | null
+): string {
+  if (!start && !end) return ''
+  const fmt = (iso: string) => {
+    const d = new Date(`${iso.slice(0, 10)}T00:00:00`)
+    if (Number.isNaN(d.getTime())) return iso.slice(0, 10)
+    return d.toLocaleDateString(undefined, { month: 'short', year: 'numeric' })
+  }
+  if (start && end) {
+    const s = new Date(`${start.slice(0, 10)}T00:00:00`)
+    const e = new Date(`${end.slice(0, 10)}T00:00:00`)
+    if (!Number.isNaN(s.getTime()) && !Number.isNaN(e.getTime())) {
+      const sameYear = s.getFullYear() === e.getFullYear()
+      const startLabel = s.toLocaleDateString(undefined, {
+        month: 'short',
+        ...(sameYear ? {} : { year: 'numeric' }),
+      })
+      const endLabel = e.toLocaleDateString(undefined, {
+        month: 'short',
+        year: 'numeric',
+      })
+      return `${startLabel}–${endLabel}`
+    }
+    return `${fmt(start)} – ${fmt(end)}`
+  }
+  return fmt((start || end) as string)
+}
+
+/** Distinguish identical product names in claims picker */
+export function formatProductClaimSelectLabel(product: {
+  name?: string | null
+  crop?: string | null
+  region?: any
+  coverage_start_date?: string | null
+  coverage_end_date?: string | null
+}): string {
+  const name = product.name?.trim() || 'Untitled product'
+  const loc = extractLocationFromProductRegion(product.region)
+  const place =
+    [loc.commune, loc.district, loc.province].filter(Boolean).join(', ') || null
+  const range = formatCoverageRangeLabel(
+    product.coverage_start_date,
+    product.coverage_end_date
+  )
+  const parts = [name]
+  if (place) parts.push(place)
+  if (range) parts.push(range)
+  else if (product.crop) parts.push(product.crop)
+  return parts.join(' · ')
+}

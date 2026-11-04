@@ -104,11 +104,6 @@ export function ProductLibrary() {
     router.push(`/protected/operations-dashboard/products/${productId}`)
   }
 
-  const handleEdit = (productId: string) => {
-    // Navigate to edit page (to be implemented in future sections)
-    console.log('Edit product:', productId)
-  }
-
   const handleDuplicate = (productId: string) => {
     // Navigate to duplicate page (to be implemented in future sections)
     console.log('Duplicate product:', productId)
@@ -218,7 +213,6 @@ export function ProductLibrary() {
             onSort={handleSort}
             onPageChange={handlePageChange}
             onView={handleView}
-            onEdit={handleEdit}
             onDuplicate={handleDuplicate}
             onDelete={handleDelete}
             onAssign={handleAssign}

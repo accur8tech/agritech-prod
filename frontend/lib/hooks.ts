@@ -452,10 +452,12 @@ export function useUpdateProduct() {
       return ProductsService.updateProduct(id, updates)
     },
     onSuccess: (data) => {
-      // Invalidate and refetch product-related queries
+      // Invalidate and refetch product-related queries (including detail page)
+      queryClient.invalidateQueries({ queryKey: productKeys.detail(data.id) })
       queryClient.invalidateQueries({ queryKey: productKeys.lists() })
+      queryClient.invalidateQueries({ queryKey: productKeys.all })
       queryClient.invalidateQueries({ queryKey: productKeys.stats() })
-      
+
       toast.success(`Product "${data.name}" has been updated successfully!`)
     },
     onError: (error: any) => {

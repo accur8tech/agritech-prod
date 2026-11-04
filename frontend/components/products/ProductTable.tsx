@@ -45,7 +45,6 @@ import {
   ArrowUpDown,
   MoreVertical,
   Eye,
-  Edit,
   Copy,
   Trash2,
   Users,
@@ -88,7 +87,6 @@ interface ProductTableProps {
   onSort?: (column: SortableProductColumn) => void
   onPageChange?: (page: number) => void
   onView?: (productId: string) => void
-  onEdit?: (productId: string) => void
   onDuplicate?: (productId: string) => void
   onDelete?: (product: ProductWithEnrollments) => void
   onAssign?: (productId: string) => void
@@ -107,7 +105,6 @@ export function ProductTable({
   onSort,
   onPageChange,
   onView,
-  onEdit,
   onDuplicate,
   onDelete,
   onAssign
@@ -318,10 +315,6 @@ export function ProductTable({
                       <DropdownMenuItem onClick={() => onView?.(product.id)}>
                         <Eye className="mr-2 h-4 w-4" />
                         View Details
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => onEdit?.(product.id)}>
-                        <Edit className="mr-2 h-4 w-4" />
-                        Edit Product
                       </DropdownMenuItem>
                       <DropdownMenuItem onClick={() => onDuplicate?.(product.id)}>
                         <Copy className="mr-2 h-4 w-4" />

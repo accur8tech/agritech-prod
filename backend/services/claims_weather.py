@@ -2,7 +2,8 @@
 Claims weather fetch via Google Earth Engine.
 
 Reuses retrieve_precipitation_data / retrieve_temperature_data with a
-single-commune GeoDataFrame. Does not touch weather_downloads or Excel export.
+single-commune GeoDataFrame. Precipitation is CHIRPS v3 daily satellite
+(UCSB-CHC/CHIRPS/V3/DAILY_SAT). Does not touch weather_downloads or Excel export.
 """
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ from countries import (
     to_climate_column_name,
     validate_location,
 )
-from weather.precipitation import retrieve_precipitation_data
+from weather.precipitation import CHIRPS_DAILY_COLLECTION, retrieve_precipitation_data
 from weather.temperature import retrieve_temperature_data
 
 
@@ -197,6 +198,12 @@ def fetch_claims_weather(
     snapshot_meta = {
         "source": "gee",
         "datasets": gee_datasets,
+        # Provenance only. Callers still key rainfall off datasets == "CHIRPS".
+        **(
+            {"chirps_collection": CHIRPS_DAILY_COLLECTION}
+            if "CHIRPS" in gee_datasets
+            else {}
+        ),
         "fetched_at": datetime.utcnow().isoformat() + "Z",
         "location": {
             "country": country,

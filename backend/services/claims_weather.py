@@ -2,8 +2,8 @@
 Claims weather fetch via Google Earth Engine.
 
 Reuses retrieve_precipitation_data / retrieve_temperature_data with a
-single-commune GeoDataFrame. Precipitation is CHIRPS v3 daily satellite
-(UCSB-CHC/CHIRPS/V3/DAILY_SAT). Does not touch weather_downloads or Excel export.
+single-commune GeoDataFrame. Precipitation is CHIRPS v2 daily
+(UCSB-CHG/CHIRPS/DAILY). Does not touch weather_downloads or Excel export.
 """
 from __future__ import annotations
 

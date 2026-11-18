@@ -229,6 +229,13 @@ export function ClaimResultSummary({
                           {peril.insufficient_data
                             ? "No data"
                             : `${fmtNum(peril.actual_value, 2)}${unit ? ` ${unit}` : ""}`}
+                          {!peril.insufficient_data &&
+                            peril.peril_type !== "LRI" &&
+                            peril.peril_type !== "ERI" && (
+                              <div className="text-xs text-gray-500">
+                                {peril.observations ?? 0} days
+                              </div>
+                            )}
                         </TableCell>
                         <TableCell>
                           {peril.insufficient_data ? (

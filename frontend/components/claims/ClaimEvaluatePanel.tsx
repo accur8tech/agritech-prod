@@ -9,6 +9,7 @@ import {
   extractLocationFromProductRegion,
   formatPerilTypeLabel,
   formatProductClaimSelectLabel,
+  getManualEvaluationWindow,
   getTermsheetDateWindow,
   mapManualFormToClaimTermsheet,
   mapProductToClaimTermsheet,
@@ -23,6 +24,7 @@ import {
   getDistrictsForState,
   getStatesForCountry,
 } from "@/components/weather/locationConfig"
+import { Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -60,7 +62,7 @@ const emptyPeril = (): ManualPerilForm => ({
   trigger: 0,
   duration: 10,
   unit_payout: 1,
-  max_payout: 100,
+  max_payout: undefined,
   exit_trigger: undefined,
   exit: undefined,
 })
@@ -216,7 +218,48 @@ export function ClaimEvaluatePanel({
     return !!(country && province && district && c)
   }
 
+  const manualWindow = useMemo(() => getManualEvaluationWindow(perils), [perils])
+
   const buildPayload = (): ClaimEvaluatePayload => {
+    const location = {
+      country,
+      province,
+      district,
+      commune: resolveCommune(),
+    }
+
+    if (mode === "manual") {
+      if (!locationReady()) {
+        throw new Error("Please select province, district, and commune")
+      }
+      if (!perils.length) throw new Error("Add at least one coverage period")
+      for (const p of perils) {
+        if (!p.startDate || !p.endDate) {
+          throw new Error("Each coverage period needs start and end dates")
+        }
+        if (p.startDate > p.endDate) {
+          throw new Error("Each coverage period's start must be on or before its end")
+        }
+      }
+      const window = getManualEvaluationWindow(perils)
+      if (!window) {
+        throw new Error("Each coverage period needs start and end dates")
+      }
+      if (window.start > window.end) {
+        throw new Error("Coverage start must be on or before the end date")
+      }
+      return {
+        location,
+        evaluation_start: window.start,
+        evaluation_end: window.end,
+        termsheet: mapManualFormToClaimTermsheet(perils, sumInsured),
+        sum_insured_scale: 1,
+        enrollment_id: null,
+        product_id: null,
+        source: "manual",
+      }
+    }
+
     if (!locationReady()) {
       throw new Error("Please select province, district, and commune")
     }
@@ -226,33 +269,6 @@ export function ClaimEvaluatePanel({
     if (evaluationStart > evaluationEnd) {
       throw new Error("Coverage start must be on or before the end date")
     }
-
-    const location = {
-      country,
-      province,
-      district,
-      commune: resolveCommune(),
-    }
-
-    if (mode === "manual") {
-      if (!perils.length) throw new Error("Add at least one coverage period")
-      for (const p of perils) {
-        if (!p.startDate || !p.endDate) {
-          throw new Error("Each coverage period needs start and end dates")
-        }
-      }
-      return {
-        location,
-        evaluation_start: evaluationStart,
-        evaluation_end: evaluationEnd,
-        termsheet: mapManualFormToClaimTermsheet(perils, sumInsured),
-        sum_insured_scale: 1,
-        enrollment_id: null,
-        product_id: null,
-        source: "manual",
-      }
-    }
-
     if (!selectedProduct) throw new Error("Please select a product")
     if (!productLocationComplete) {
       throw new Error(
@@ -339,12 +355,11 @@ export function ClaimEvaluatePanel({
   }
 
   const policyContext = (() => {
-    if (!selectedProduct && mode !== "product") {
+    if (mode === "manual") {
+      // No product policy on manual checks — avoid "policy still active" / partial banners.
       return getPolicyClaimContext({
-        coverageStart: evaluationStart,
-        coverageEnd: evaluationEnd,
-        evaluationStart,
-        evaluationEnd,
+        evaluationStart: manualWindow?.start,
+        evaluationEnd: manualWindow?.end,
       })
     }
     return getPolicyClaimContext({
@@ -468,114 +483,277 @@ export function ClaimEvaluatePanel({
               <TabsTrigger value="product">Use existing product</TabsTrigger>
             </TabsList>
 
-            <TabsContent value="manual" className="space-y-4 mt-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <Label>Sum insured</Label>
-                  <Input
-                    type="number"
-                    value={sumInsured}
-                    onChange={(e) => setSumInsured(Number(e.target.value))}
-                  />
-                </div>
-              </div>
-              {perils.map((peril, idx) => (
-                <div
-                  key={idx}
-                  className="border border-gray-200 rounded-lg p-4 grid grid-cols-1 md:grid-cols-3 gap-3"
-                >
+            <TabsContent value="manual" className="space-y-6 mt-4">
+              <div className="space-y-3">
+                <h3 className="font-medium text-gray-900">Location</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
                   <div>
-                    <Label>Coverage type</Label>
+                    <Label>Country</Label>
                     <Select
-                      value={peril.peril_type}
-                      onValueChange={(v) =>
-                        updatePeril(idx, { peril_type: v as ManualPerilForm["peril_type"] })
-                      }
+                      value={country}
+                      onValueChange={(v) => {
+                        setCountry(v as CountryCode)
+                        setProvince("")
+                        setDistrict("")
+                        setCommune("")
+                      }}
                     >
                       <SelectTrigger>
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="LRI">Drought (low rainfall)</SelectItem>
-                        <SelectItem value="ERI">Excess rain</SelectItem>
-                        <SelectItem value="LTI">Cold (low temperature)</SelectItem>
-                        <SelectItem value="HTI">Heat (high temperature)</SelectItem>
+                        {SUPPORTED_COUNTRIES.map((c) => (
+                          <SelectItem key={c} value={c}>
+                            {c}
+                          </SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
                   </div>
                   <div>
-                    <Label>Period start</Label>
-                    <Input
-                      type="date"
-                      value={peril.startDate}
-                      onChange={(e) => updatePeril(idx, { startDate: e.target.value })}
-                    />
+                    <Label>{countryConfig.labels.state}</Label>
+                    <Select
+                      value={province}
+                      onValueChange={(v) => {
+                        setProvince(v)
+                        setDistrict("")
+                        setCommune("")
+                      }}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {provinces.map((p) => (
+                          <SelectItem key={p} value={p}>
+                            {p}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
                   <div>
-                    <Label>Period end</Label>
-                    <Input
-                      type="date"
-                      value={peril.endDate}
-                      onChange={(e) => updatePeril(idx, { endDate: e.target.value })}
-                    />
+                    <Label>{countryConfig.labels.district}</Label>
+                    <Select
+                      value={district}
+                      onValueChange={(v) => {
+                        setDistrict(v)
+                        setCommune("")
+                      }}
+                      disabled={!province}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {districts.map((d) => (
+                          <SelectItem key={d} value={d}>
+                            {d}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
-                  <div>
-                    <Label>Trigger</Label>
+                  {countryConfig.hasCommuneLevel && (
+                    <div>
+                      <Label>{countryConfig.labels.commune}</Label>
+                      <Select
+                        value={commune}
+                        onValueChange={setCommune}
+                        disabled={!district}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {communes.map((c) => (
+                            <SelectItem key={c} value={c}>
+                              {c}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-4 border-t pt-4">
+                <div className="flex flex-col sm:flex-row sm:items-end gap-4">
+                  <div className="sm:max-w-xs w-full">
+                    <Label>Sum insured</Label>
                     <Input
                       type="number"
-                      value={peril.trigger}
-                      onChange={(e) => updatePeril(idx, { trigger: Number(e.target.value) })}
-                    />
-                  </div>
-                  <div>
-                    <Label>Duration (days)</Label>
-                    <Input
-                      type="number"
-                      value={peril.duration}
-                      onChange={(e) => updatePeril(idx, { duration: Number(e.target.value) })}
-                    />
-                  </div>
-                  <div>
-                    <Label>Payout per unit</Label>
-                    <Input
-                      type="number"
-                      value={peril.unit_payout}
-                      onChange={(e) =>
-                        updatePeril(idx, { unit_payout: Number(e.target.value) })
-                      }
-                    />
-                  </div>
-                  <div>
-                    <Label>Maximum payout</Label>
-                    <Input
-                      type="number"
-                      value={peril.max_payout}
-                      onChange={(e) =>
-                        updatePeril(idx, { max_payout: Number(e.target.value) })
-                      }
-                    />
-                  </div>
-                  <div>
-                    <Label>Exit level (optional)</Label>
-                    <Input
-                      type="number"
-                      value={peril.exit_trigger ?? peril.exit ?? ""}
-                      onChange={(e) =>
-                        updatePeril(idx, {
-                          exit_trigger: e.target.value === "" ? undefined : Number(e.target.value),
-                        })
-                      }
+                      value={sumInsured}
+                      onChange={(e) => setSumInsured(Number(e.target.value))}
                     />
                   </div>
                 </div>
-              ))}
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setPerils((p) => [...p, emptyPeril()])}
-              >
-                Add coverage period
-              </Button>
+
+                {perils.map((peril, idx) => (
+                  <div
+                    key={idx}
+                    className="border border-gray-200 rounded-lg p-4 space-y-3"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <h4 className="text-sm font-medium text-gray-900">
+                        Period {idx + 1}
+                        {peril.startDate && peril.endDate
+                          ? ` · ${peril.startDate} – ${peril.endDate}`
+                          : ""}
+                      </h4>
+                      {perils.length > 1 && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-gray-500 shrink-0"
+                          aria-label={`Remove period ${idx + 1}`}
+                          onClick={() =>
+                            setPerils((prev) => prev.filter((_, i) => i !== idx))
+                          }
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                      <div>
+                        <Label>Coverage type</Label>
+                        <Select
+                          value={peril.peril_type}
+                          onValueChange={(v) =>
+                            updatePeril(idx, {
+                              peril_type: v as ManualPerilForm["peril_type"],
+                            })
+                          }
+                        >
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="LRI">Drought (low rainfall)</SelectItem>
+                            <SelectItem value="ERI">Excess rain</SelectItem>
+                            <SelectItem value="LTI">Cold (low temperature)</SelectItem>
+                            <SelectItem value="HTI">Heat (high temperature)</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div>
+                        <Label>Period start</Label>
+                        <Input
+                          type="date"
+                          value={peril.startDate}
+                          onChange={(e) =>
+                            updatePeril(idx, { startDate: e.target.value })
+                          }
+                        />
+                      </div>
+                      <div>
+                        <Label>Period end</Label>
+                        <Input
+                          type="date"
+                          value={peril.endDate}
+                          onChange={(e) =>
+                            updatePeril(idx, { endDate: e.target.value })
+                          }
+                        />
+                      </div>
+                      <div>
+                        <Label>Trigger</Label>
+                        <Input
+                          type="number"
+                          value={peril.trigger}
+                          onChange={(e) =>
+                            updatePeril(idx, { trigger: Number(e.target.value) })
+                          }
+                        />
+                      </div>
+                      <div>
+                        <Label>Duration (days)</Label>
+                        <Input
+                          type="number"
+                          value={peril.duration}
+                          onChange={(e) =>
+                            updatePeril(idx, { duration: Number(e.target.value) })
+                          }
+                        />
+                      </div>
+                      <div>
+                        <Label>Payout per unit</Label>
+                        <Input
+                          type="number"
+                          value={peril.unit_payout}
+                          onChange={(e) =>
+                            updatePeril(idx, {
+                              unit_payout: Number(e.target.value),
+                            })
+                          }
+                        />
+                      </div>
+                      <div>
+                        <Label>Maximum payout (optional)</Label>
+                        <Input
+                          type="number"
+                          placeholder={`Defaults to sum insured (${sumInsured})`}
+                          value={peril.max_payout ?? ""}
+                          onChange={(e) =>
+                            updatePeril(idx, {
+                              max_payout:
+                                e.target.value === ""
+                                  ? undefined
+                                  : Number(e.target.value),
+                            })
+                          }
+                        />
+                      </div>
+                      <div>
+                        <Label>Exit level (optional)</Label>
+                        <Input
+                          type="number"
+                          value={peril.exit_trigger ?? peril.exit ?? ""}
+                          onChange={(e) =>
+                            updatePeril(idx, {
+                              exit_trigger:
+                                e.target.value === ""
+                                  ? undefined
+                                  : Number(e.target.value),
+                            })
+                          }
+                        />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setPerils((p) => [...p, emptyPeril()])}
+                >
+                  Add coverage period
+                </Button>
+              </div>
+
+              <div className="space-y-3 border-t pt-4">
+                {manualWindow && (
+                  <p className="text-sm text-gray-500">
+                    Weather will be checked for{" "}
+                    <span className="text-gray-800">
+                      {manualWindow.start} – {manualWindow.end}
+                    </span>{" "}
+                    (from your period dates). This may take a minute or two.
+                  </p>
+                )}
+                {!manualWindow && (
+                  <p className="text-sm text-gray-500">
+                    We look up the latest weather for this location. This may take a
+                    minute or two.
+                  </p>
+                )}
+                <Button onClick={runEvaluate} disabled={running}>
+                  {running ? `Checking… ${taskStatus || ""}` : "Check for payout"}
+                </Button>
+              </div>
             </TabsContent>
 
             <TabsContent value="product" className="space-y-4 mt-4">
@@ -714,148 +892,6 @@ export function ClaimEvaluatePanel({
               </div>
             </TabsContent>
           </Tabs>
-
-          {mode === "manual" && (
-          <div className="border-t pt-4 space-y-4">
-            <div>
-              <h3 className="font-medium text-gray-900">Location and coverage dates</h3>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-              <div>
-                <Label>Country</Label>
-                <Select
-                  value={country}
-                  onValueChange={(v) => {
-                    setCountry(v as CountryCode)
-                    setProvince("")
-                    setDistrict("")
-                    setCommune("")
-                  }}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {SUPPORTED_COUNTRIES.map((c) => (
-                      <SelectItem key={c} value={c}>
-                        {c}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label>{countryConfig.labels.state}</Label>
-                <Select
-                  value={province}
-                  onValueChange={(v) => {
-                    setProvince(v)
-                    setDistrict("")
-                    setCommune("")
-                  }}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {provinces.map((p) => (
-                      <SelectItem key={p} value={p}>
-                        {p}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label>{countryConfig.labels.district}</Label>
-                <Select
-                  value={district}
-                  onValueChange={(v) => {
-                    setDistrict(v)
-                    setCommune("")
-                  }}
-                  disabled={!province}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {districts.map((d) => (
-                      <SelectItem key={d} value={d}>
-                        {d}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              {countryConfig.hasCommuneLevel && (
-                <div>
-                  <Label>{countryConfig.labels.commune}</Label>
-                  <Select
-                    value={commune}
-                    onValueChange={setCommune}
-                    disabled={!district}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {communes.map((c) => (
-                        <SelectItem key={c} value={c}>
-                          {c}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <div>
-                <Label>Coverage start</Label>
-                <Input
-                  type="date"
-                  value={evaluationStart}
-                  onChange={(e) => setEvaluationStart(e.target.value)}
-                />
-              </div>
-              <div>
-                <Label>Coverage end</Label>
-                <Input
-                  type="date"
-                  value={evaluationEnd}
-                  onChange={(e) => setEvaluationEnd(e.target.value)}
-                />
-              </div>
-            </div>
-
-            {(policyContext.policyActive || policyContext.isPartialClaim) && (
-              <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900 space-y-1">
-                {policyContext.policyActive && (
-                  <p>
-                    <span className="font-medium">Policy is still active.</span> Full
-                    coverage runs {policyContext.coverageLabel}. You can process a
-                    partial claim for the dates below and check again later.
-                  </p>
-                )}
-                {policyContext.isPartialClaim && (
-                  <p>
-                    <span className="font-medium">Partial claim check.</span> Selected
-                    dates ({policyContext.evaluationLabel}) are only part of the full
-                    coverage window.
-                  </p>
-                )}
-              </div>
-            )}
-
-            <p className="text-sm text-gray-500">
-              We look up the latest weather for this location. This may take a minute or two.
-            </p>
-            <Button onClick={runEvaluate} disabled={running}>
-              {running ? `Checking… ${taskStatus || ""}` : "Check for payout"}
-            </Button>
-          </div>
-          )}
         </CardContent>
       </Card>
 

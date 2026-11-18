@@ -71,7 +71,8 @@ export interface ManualPerilForm {
   trigger: number
   duration: number
   unit_payout: number
-  max_payout: number
+  /** Omit / leave blank to default to sum insured at evaluate time */
+  max_payout?: number
   exit_trigger?: number
   exit?: number
 }
@@ -235,10 +236,24 @@ export function computeSumInsuredScale(
   return enrollmentSumInsured / productSumInsured
 }
 
+/** Span of all period dates — used as the weather evaluation window for manual checks. */
+export function getManualEvaluationWindow(
+  perils: Array<{ startDate?: string; endDate?: string }>
+): { start: string; end: string } | null {
+  const dated = perils.filter((p) => p.startDate && p.endDate)
+  if (!dated.length) return null
+  const starts = dated.map((p) => p.startDate!.slice(0, 10))
+  const ends = dated.map((p) => p.endDate!.slice(0, 10))
+  const start = [...starts].sort()[0]
+  const end = [...ends].sort()[ends.length - 1]
+  return { start, end }
+}
+
 export function mapManualFormToClaimTermsheet(
   perils: ManualPerilForm[],
   sumInsured: number
 ): ClaimTermsheetInput {
+  const si = Number(sumInsured) || 0
   const periods: ClaimPeriodInput[] = perils.map((p) => ({
     startDate: p.startDate,
     endDate: p.endDate,
@@ -248,7 +263,11 @@ export function mapManualFormToClaimTermsheet(
         trigger: Number(p.trigger) || 0,
         duration: Number(p.duration) || 1,
         unit_payout: Number(p.unit_payout) || 0,
-        max_payout: Number(p.max_payout) || 0,
+        // Blank max payout → cap at sum insured (API still requires a number)
+        max_payout:
+          p.max_payout != null && !Number.isNaN(Number(p.max_payout))
+            ? Number(p.max_payout)
+            : si,
         exit_trigger: p.exit_trigger != null ? Number(p.exit_trigger) : undefined,
         exit: p.exit != null ? Number(p.exit) : undefined,
       },
@@ -257,7 +276,7 @@ export function mapManualFormToClaimTermsheet(
 
   return {
     periods,
-    sumInsured: Number(sumInsured) || 0,
+    sumInsured: si,
     dayIndexMode: 'day_of_year',
   }
 }

@@ -113,7 +113,7 @@ export function ClaimResultSummary({
 
   return (
     <div className="space-y-5">
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <div className="rounded-lg border border-gray-200 bg-white p-3">
           <div className="text-xs text-gray-500">Outcome</div>
           <div className="mt-1">
@@ -135,12 +135,6 @@ export function ClaimResultSummary({
           <div className="text-xs text-gray-500">Amount</div>
           <div className="mt-1 text-xl font-semibold text-gray-900">
             {money(result.payout)}
-          </div>
-        </div>
-        <div className="rounded-lg border border-gray-200 bg-white p-3">
-          <div className="text-xs text-gray-500">Actual weather</div>
-          <div className="mt-1 text-lg font-medium text-gray-900">
-            {result.trigger_value != null ? fmtNum(result.trigger_value, 2) : "—"}
           </div>
         </div>
         <div className="rounded-lg border border-gray-200 bg-white p-3">

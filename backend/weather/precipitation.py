@@ -13,9 +13,8 @@ from countries import (
     to_climate_column_name,
 )
 
-# CHIRPS v3 daily precipitation (IMERG satellite disaggregation).
-# Band is still "precipitation" in mm/day at ~0.05°.
-CHIRPS_DAILY_COLLECTION = "UCSB-CHC/CHIRPS/V3/DAILY_SAT"
+# CHIRPS v2 daily precipitation (mm/day at ~0.05°).
+CHIRPS_DAILY_COLLECTION = "UCSB-CHG/CHIRPS/DAILY"
 
 def get_date_batches(start_date: str, end_date: str, batch_years: int = 10):
     """Split date range into batches of specified years."""
@@ -93,7 +92,7 @@ def retrieve_precipitation_data(province_gdf, start_date: str, end_date: str, co
                 else:
                     raise ValueError(f"Unsupported geometry type: {geom.geom_type}")
 
-                # Fetch CHIRPS v3 daily satellite precipitation for the commune polygon
+                # Fetch CHIRPS v2 daily precipitation for the commune polygon
                 chirps = (
                     ee.ImageCollection(CHIRPS_DAILY_COLLECTION)
                     .filterDate(batch_start, batch_end_gee)
